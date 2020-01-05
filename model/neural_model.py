@@ -114,7 +114,7 @@ class ConvTextRedditClf(Model):
         self.train_data, self.test_data = train_test_split(self.data, self.test_split_ratio)
         self.text_preprocessing = Pipeline([("column_selection", ColumnSelector([self.text_col])),
                                 ("text_cleaning", TextCleaning(self.text_col)), ("stem", Stem(self.text_col, True))])
-        self.text_feat_generation = Pipeline([('preprocessing', self.text_preprocessing), ('tokeniser', TextTokeniser(self.text_col))])
+        self.text_feat_tokenizer = Pipeline([('preprocessing', self.text_preprocessing), ('tokeniser', TextTokeniser(self.text_col))])
         self.other_feat_gen = ColumnTransformer([("other_column_selector", "column_selection", ColumnSelector(self.other_var), self.other_var), ("Character_feature_gen", CharacterFeatureGen(self.text_col), self.text_col),
                               ('Encoding_post_depth_var', OneHotEncoder(handle_unknown='ignore'), [self.depth_post_col])], remainder='drop')
 
@@ -196,14 +196,16 @@ class ConvTextRedditClf(Model):
         size = 0
         text_inp = []
         other_feature_inp = []
+        output = []
         while True:
             for row in inp_data.itertuples(index=False):
                 while size < batch_size:
-                    text_inp.append(pad_sequences(self.text_feat_generation.transform(row), maxlen=self.input_sequence_size, padding='post'))
+                    text_inp.append(pad_sequences(self.text_feat_tokenizer.transform(row), maxlen=self.input_sequence_size, padding='post'))
                     other_feature_inp.append(self.other_feat_gen.transform(row))
+                    output.append(row[inp_data.columns.get_loc(self.output_col)])
                     size += 1
 
-            yield [np.array(text_inp), np.array(other_feature_inp)], row[inp_data.columns.get_loc(self.output_col)]
+            yield [np.array(text_inp), np.array(other_feature_inp)], output
 
     def fit(self, train_data=None, val_data=None, batch_size=128, val_split=0.25, num_epochs=1000, optimizer='rmsprop', loss=focal_loss(0.4, 2.0), gpu_no=0):
 
