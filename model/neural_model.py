@@ -199,7 +199,7 @@ class ConvTextRedditClf(Model):
         start = 0
         while True:
             text_inp = self.text_feat_tokenizer.transform(inp_data.iloc[start:start+batch_size])
-            cat_feature_inp = self.categorical_feat_ext.transform(inp_data[start:start+batch_size])
+            cat_feature_inp = self.categorical_feat_ext.transform(inp_data.iloc[start:start+batch_size])
             char_feature_inp = self.char_feat_gen_pipeline.transform(inp_data.iloc[start:start+batch_size])
             output = inp_data.iloc[start:start+batch_size, inp_data.columns.get_loc(self.output_col)].to_numpy()
             start += batch_size
