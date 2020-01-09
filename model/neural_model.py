@@ -198,10 +198,13 @@ class ConvTextRedditClf(Model):
 
         start = 0
         while True:
-            text_inp = self.text_feat_tokenizer.transform(inp_data)
-            cat_feature_inp = self.categorical_feat_ext.transform(inp_data)
-            char_feature_inp = self.char_feat_gen_pipeline.transform(inp_data)
+            text_inp = self.text_feat_tokenizer.transform(inp_data.iloc[start:start+batch_size])
+            cat_feature_inp = self.categorical_feat_ext.transform(inp_data[start:start+batch_size])
+            char_feature_inp = self.char_feat_gen_pipeline.transform(inp_data.iloc[start:start+batch_size])
             output = inp_data.iloc[start:start+batch_size, inp_data.columns.get_loc(self.output_col)].to_numpy()
+            start += batch_size
+            if start >= number_train_rows:
+                start = 0
             yield [np.array(text_inp), np.concatenate([cat_feature_inp, char_feature_inp], axis=1)], output
 
     def fit(self, train_data=None, val_data=None, batch_size=128, val_split=0.25, num_epochs=1000, optimizer='rmsprop', loss=focal_loss(0.4, 2.0), gpu_no=0):
