@@ -1,3 +1,10 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Python script for defining model classes for deep learning algorithm
+"""
+
+
 import tensorflow as tf
 from utils.preprocessing_util import *
 from utils.feature_extraction import *
@@ -11,7 +18,6 @@ from sklearn.preprocessing import OneHotEncoder, LabelEncoder, OrdinalEncoder
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Embedding, BatchNormalization, Dropout, MaxPooling1D, Conv1D, Activation, Flatten, Input, Dense, concatenate
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, Callback, TensorBoard
-from tensorflow.keras.preprocessing.sequence import pad_sequences
 import math
 
 
@@ -34,6 +40,13 @@ def focal_loss(alpha, gamma):
 
 
 def get_word_embedding_matrix(word_2_vec, word_vec_dim, word_2_ind):
+    """
+    function to get word embedding matrix for given vocabulary of words. each row corresponds to single word in the vocabulary
+    :param word_2_vec: dictionary mapping word to it's word vector embedding
+    :param word_vec_dim: dimension of word vectors
+    :param word_2_ind: dicitionary mapping word to row index of embedding matrix
+    :return:
+    """
     vocab_size = len(list(word_2_ind.keys())) + 1
     weight_matrix = np.zeros(vocab_size, word_vec_dim)
     # step vocab, store vectors using the Tokenizer's integer mapping
@@ -67,8 +80,23 @@ def get_unique_label(data, label_col, annotator_col, count_dict):
 
 
 class ConvTextRedditClf(Model):
+    """
+    class to build 1-D conv nets for text classification
+    """
 
     def __init__(self, data_loc, output_col, text_col, annotator_col, categorical_vars_one_hot_enc, categorical_vars_label_enc, categorical_vars_rank_enc, test_split_ratio, **kwargs):
+        """
+
+        :param data_loc: location of input data
+        :param output_col: name of output_column
+        :param text_col: name of column containing text
+        :param annotator_col: name of columns containg set of annotators
+        :param categorical_vars_one_hot_enc: list of categorical variables which are to be one-hot encoded
+        :param categorical_vars_label_enc:list of categorical variables which have to be label encoded
+        :param categorical_vars_rank_enc: list of categorical variables which have to be ordinal encoded
+        :param test_split_ratio: ratio to train_test split
+        :param kwargs:
+        """
         super().__init__()
 
         # getting all arguments except for kwargs
@@ -113,7 +141,7 @@ class ConvTextRedditClf(Model):
         # train and test data. Note test data is not used for hyper parameter tuning. for hyperparameter training we generate validation data from train_data itself
         self.train_data, self.test_data = train_test_split(self.data, self.test_split_ratio)
         self.text_preprocessing = Pipeline([("stem", Stem(True)), ("cleaning", TextCleaning())])
-        self.text_feat_tokenizer = ColumnTransformer(["text_feat", Pipeline([('preprocessing', self.text_preprocessing), ('tokeniser', TextTokeniser(self.text_col))]), self.text_col])
+        self.text_feat_tokenizer = ColumnTransformer(["text_feat", Pipeline([('preprocessing', self.text_preprocessing), ('tokeniser', TextTokeniser())]), self.text_col])
         self.categorical_feat_ext = ColumnTransformer([('one_hot', OneHotEncoder(), self.categorical_vars_one_hot_enc),
                                                        ('label', LabelEncoder(), self.categorical_vars_lab_enc),
                                                        ('ordinal', OrdinalEncoder(), self.categorical_vars_rank_enc)],
@@ -129,6 +157,11 @@ class ConvTextRedditClf(Model):
         self.word_2_index, self.index_2_word, self.word_2_vec_dict = self.get_word_dict()
 
     def get_word_dict(self):
+        """
+
+        :return: tuples of dictionaries mapping word to index, index to word and word to word vectors
+        """
+
         word_2_index = {word: index + 1 for index, word in enumerate(self.vocab)}
         index_2_word = {index: word for word, index in self.word_2_index.items()}
 
@@ -139,6 +172,11 @@ class ConvTextRedditClf(Model):
         return word_2_index, index_2_word, word_2_vec_dict
 
     def preprocess_data(self, data):
+        """
+        method to preprocess given data
+        :param data: input pandas DataFrame
+        :return: preprocess output DataFrame
+        """
         # removing rows which have missing values for text or label column
         data = data.dropna(subset=[self.text_col, self.label_col]).reset_index(drop=True)
         # removing rows which have text deleted
@@ -154,6 +192,11 @@ class ConvTextRedditClf(Model):
         return data
 
     def build_model(self, save_model_arch_file=False):
+        """
+        method to build model archotecture
+        :param save_model_arch_file: bool variable to save model architecture to json file
+        :return:
+        """
         # build the first (CONV => RELU) * 1 => POOL layer set
         embedding_vectors = get_word_embedding_matrix(self.word_2_vec_dict, self.word_vec_dim, self.word_2_index)
 
@@ -170,6 +213,7 @@ class ConvTextRedditClf(Model):
 
         x = MaxPooling1D(pool_size=2)(x)
         x = Flatten()(x)
+        # Features apart from word vectors are fed to only dense layer by concatenating it with out put from convlayer above
         other_feat_input = Input(shape=(self.no_other_feature,))
         dense_inp = concatenate([x, other_feat_input])
         for i in range(self.num_dense_layers):
@@ -186,6 +230,12 @@ class ConvTextRedditClf(Model):
         return None
 
     def batch_data_generator(self, inp_data, batch_size):
+        """
+        method to generate batch of data of given batch size for training
+        :param inp_data: Input preprocessed DataFrame
+        :param batch_size: int size of batch
+        :return: tuple of model input 2-D array and output variable. Input is combination of two arrays
+        """
         if not self.is_preprocessing_train:
             self.text_feat_tokenizer.fit(inp_data)
             self.is_text_feat_gen_train = True
@@ -197,18 +247,56 @@ class ConvTextRedditClf(Model):
         number_train_rows = inp_data.shape()[0]
 
         start = 0
+        end = batch_size
         while True:
-            text_inp = self.text_feat_tokenizer.transform(inp_data.iloc[start:start+batch_size])
-            cat_feature_inp = self.categorical_feat_ext.transform(inp_data.iloc[start:start+batch_size])
-            char_feature_inp = self.char_feat_gen_pipeline.transform(inp_data.iloc[start:start+batch_size])
-            output = inp_data.iloc[start:start+batch_size, inp_data.columns.get_loc(self.output_col)].to_numpy()
+            text_inp = self.text_feat_tokenizer.transform(inp_data.iloc[start:end])
+            cat_feature_inp = self.categorical_feat_ext.transform(inp_data.iloc[start:end])
+            char_feature_inp = self.char_feat_gen_pipeline.transform(inp_data.iloc[start:end])
+            output = inp_data.iloc[start:end, inp_data.columns.get_loc(self.output_col)].to_numpy()
             start += batch_size
+            end += batch_size
+            if end > number_train_rows:
+                end = number_train_rows
             if start >= number_train_rows:
                 start = 0
             yield [np.array(text_inp), np.concatenate([cat_feature_inp, char_feature_inp], axis=1)], output
 
-    def fit(self, train_data=None, val_data=None, batch_size=128, val_split=0.25, num_epochs=1000, optimizer='rmsprop', loss=focal_loss(0.4, 2.0), gpu_no=0):
+    def test_batch_data_generator(self, inp_data, batch_size):
+        """
+        method to generate batch of data of given batch size for inference
+        :param inp_data: Input preprocessed DataFrame
+        :param batch_size: int size of batch
+        :return: tuple of model input 2-D array. Input is combination of two arrays
+        """
+        number_train_rows = inp_data.shape()[0]
 
+        start = 0
+        end = batch_size
+        while True:
+            text_inp = self.text_feat_tokenizer.transform(inp_data.iloc[start:end])
+            cat_feature_inp = self.categorical_feat_ext.transform(inp_data.iloc[start:end])
+            char_feature_inp = self.char_feat_gen_pipeline.transform(inp_data.iloc[start:end])
+            start += batch_size
+            end += batch_size
+            if end > number_train_rows:
+                end = number_train_rows
+            if start >= number_train_rows:
+                start = 0
+            yield inp_data.iloc[start:start + batch_size], [np.array(text_inp), np.concatenate([cat_feature_inp, char_feature_inp], axis=1)]
+
+    def fit(self, train_data=None, val_data=None, batch_size=128, val_split=0.25, num_epochs=1000, optimizer='rmsprop', loss=focal_loss(0.4, 2.0), gpu_no=0):
+        """
+        method to fit model
+        :param train_data: input pandas training dataframe
+        :param val_data: validation dataframe. if none generated from training data
+        :param batch_size: int batch size to be used for training
+        :param val_split: float ratio of split of test to validation data
+        :param num_epochs: int number of epochs for model training aftwer which training stops
+        :param optimizer: type of optimiser to use
+        :param loss:
+        :param gpu_no:
+        :return:
+        """
         if self.model is None:
             self.build_model(True)
         if train_data is None:
@@ -243,14 +331,26 @@ class ConvTextRedditClf(Model):
 
         return None
 
-    def predict(self, test_data=None, batch_size=8, gpu_no=None):
+    def predict(self, test_data=None, batch_size=8, gpu_no=None, pred_loc = "predicited_data.csv"):
+        """
+
+        :param test_data: str location of test_data
+        :param batch_size: int number of batch size for prediction run
+        :param gpu_no: gpu device to be used for predicting
+        :return:
+        """
         if test_data is None:
             test_data = self.test_data
         else:
             test_data = self.preprocess_data(test_data)
 
+        if not os.path.isdir(os.path.split(pred_loc)[0]) and os.path.split(pred_loc)[0] != "":
+            os.makedirs(os.path.split(pred_loc)[0])
+
         if gpu_no is None:
-            self.model.predict_generator(self.batch_generator(test_data, batch_size)[0], steps=math.ceil(test_data.shape[0] / batch_size), shuffle=False, use_multiprocessing=True, workers=8)
+            test_data['predicted_label'] = self.model.predict_generator(self.batch_generator(test_data, batch_size)[0], steps=math.ceil(test_data.shape[0] / batch_size), shuffle=False, use_multiprocessing=True, workers=8)
+
         else:
             with tf.device('/gpu:%s' % gpu_no):
-                self.model.predict_generator(self.batch_generator(test_data, batch_size)[0], steps=math.ceil(test_data.shape[0]/batch_size), shuffle=False, use_multiprocessing=True, workers=1)
+                test_data['predicted_label'] = self.model.predict_generator(self.batch_generator(test_data, batch_size)[1],steps=math.ceil(test_data.shape[0]/batch_size), shuffle=False, use_multiprocessing=True, workers=1)
+        test_data.write(pred_loc)
