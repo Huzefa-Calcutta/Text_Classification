@@ -66,8 +66,13 @@ class Basemodel(object):
         self.feature_vars = list(set([self.text_col] + self.categorical_vars_lab_enc + self.categorical_vars_one_hot_enc + self.categorical_vars_rank_enc + self.numerical_vars))
         for var in self.feature_vars:
             assert var in self.data.columns, "%s column not in the given dataset. Mention the name of the feature variable correctly"
-        self.text_feat_ext = Pipeline([('char_feat_extraction', CharacterFeatureGen()), ('word_2_vec', ColumnTransformer([('word_vec_tfidf_weighted', TfidfEmbeddingVectorizer(self.word_2_vec_dim), self.text_col)], remainder='drop', verbose=True))])
-        self.categorical_feat_ext = ColumnTransformer([('one_hot', OneHotEncoder(), self.categorical_vars_one_hot_enc), ('label', LabelEncoder(), self.categorical_vars_lab_enc), ('ordinal', OrdinalEncoder(), self.categorical_vars_rank_enc)], remainder='drop')
+        self.text_feat_ext = Pipeline([('stem', Stem()),
+                                       ("text_num_feat", ColumnTransformer([('char_feat_extraction', CharacterFeatureGen(), self.text_col),
+                                                           ('word_2_vec', TfidfEmbeddingVectorizer(self.word_2_vec_dim), self.text_col)],
+                                                          remainder='drop', verbose=True))])
+        self.categorical_feat_ext = ColumnTransformer([('one_hot', OneHotEncoder(), self.categorical_vars_one_hot_enc),
+                                                       ('label', LabelEncoder(), self.categorical_vars_lab_enc),
+                                                       ('ordinal', OrdinalEncoder(), self.categorical_vars_rank_enc)], remainder='drop', verbose=True)
         self.feat_ext = self.build_feature_extraction_pipeline()
 
     def build_feature_extraction_pipeline(self):
@@ -75,10 +80,10 @@ class Basemodel(object):
             feat_ext = Pipeline([('feat_ext', ColumnTransformer([('text_feat_ext', self.text_feat_ext, self.text_col), (
             'cat_feat_ext', self.categorical_feat_ext,
             self.categorical_vars_lab_enc + self.categorical_vars_one_hot_enc + self.categorical_vars_rank_enc)],
-                                              remainder='passthrough')), ("kernel_transform", Nystroem(n_components=1000))])
+                                              remainder='passthrough')), ("kernel_transform", Nystroem(n_components=1000))], verbose=True)
         else:
             feat_ext = ColumnTransformer([('text_feat_ext', self.text_feat_ext, self.text_col),
-                                          ('cat_feat_ext', self.categorical_feat_ext, self.categorical_vars_lab_enc + self.categorical_vars_one_hot_enc + self.categorical_vars_rank_enc)], remainder='passthrough')
+                                          ('cat_feat_ext', self.categorical_feat_ext, self.categorical_vars_lab_enc + self.categorical_vars_one_hot_enc + self.categorical_vars_rank_enc)], remainder='passthrough', verbose=True)
         return feat_ext
 
     def build_model_pipeline(self):
@@ -125,6 +130,7 @@ class Basemodel(object):
         self.cross_val_result_summary = model_cross_val.cv_results_
         self.best_score = model_cross_val.best_score_
         self.best_model = model_cross_val.best_estimator_
+        return None
 
     def save_model(self, model_loc):
         if not os.path.isdir(os.path.split(model_loc)[0]) and os.path.split(model_loc)[0] != "":
@@ -144,13 +150,16 @@ class Basemodel(object):
             test_data = pd.read_csv(test_data_loc)
         except Exception as e:
             print("Got following error while reading test data/n%s" % e)
-
+        test_data = self.preprocess_data(test_data)
         try:
             test_data['predicted_label'] = clf.predict(test_data)
         except Exception as e:
             print("Got following error while predicting/n%s" % e)
 
-        test_data.write_csv(pred_loc, index=False)
+        test_data.write_csv(os.path.join(pred_loc, "predicted.csv"), index=False)
+
+    def preprocess_data(self, data):
+        raise NotImplementedError
 
 
 class ClfReddit(Basemodel):
@@ -171,9 +180,9 @@ class ClfReddit(Basemodel):
         # removing rows which have missing values for text or label column
         data = data.dropna(subset=[self.text_col, self.label_col]).reset_index(drop=True)
         # removing rows which have text deleted
-        data = data[data[self.text_col] != self.deleted_post_str_indicator].reset_index(drop=True)
+        data = data[~(data[self.text_col].isin([self.deleted_post_str_indicator, ' ', '']))].reset_index(drop=True)
         annotators_count = {}
-        for row in data.itertuples(index=False):
+        for row in data.iter(index=False):
             for annotator in row[data.columns.get_loc(self.annotator_col)].split(";"):
                 if annotator in annotators_count:
                     annotators_count[annotator] += 1
@@ -185,7 +194,7 @@ class ClfReddit(Basemodel):
 
 class RandomForestClfReddit(ClfReddit):
 
-    def __init__(self, data_loc='reddit_post.csv', output_col='final_label', text_col='text', word_2_vec_dim=0, categorical_vars_lab_enc=['depth'], categorical_vars_one_hot_enc= [], categorical_vars_rank_enc=[], numerical_vars=[], test_size=0.2, label_col='labels', deleted_post_str_indicator='[deleted]', do_kernel_transform=False, annotator_col='annotators', **kwargs):
+    def __init__(self, data_loc='reddit_post.csv', output_col='final_label', text_col='text', word_2_vec_dim=0, categorical_vars_lab_enc=[], categorical_vars_one_hot_enc= ['depth'], categorical_vars_rank_enc=[], numerical_vars=[], test_size=0.2, label_col='labels', deleted_post_str_indicator='[deleted]', do_kernel_transform=False, annotator_col='annotators', **kwargs):
         super().__init__(data_loc, output_col, text_col, word_2_vec_dim, categorical_vars_lab_enc, categorical_vars_one_hot_enc, categorical_vars_rank_enc, numerical_vars, do_kernel_transform, test_size, label_col, deleted_post_str_indicator, annotator_col)
         for arg, val in kwargs.items():
             setattr(self, arg, val)
@@ -194,7 +203,7 @@ class RandomForestClfReddit(ClfReddit):
 
 class SVMClfReddit(ClfReddit):
 
-    def __init__(self, data_loc='reddit_post.csv', output_col='final_label', text_col='text', word_2_vec_dim=0, categorical_vars_lab_enc =[], categorical_vars_one_hot_enc =['depth'], categorical_vars_rank_enc=[], numerical_vars=[], do_kernel_transform=True, test_size=0.2, label_col='labels', deleted_post_str_indicator='[deleted]', annotator_col='annotators', **kwargs):
+    def __init__(self, data_loc='reddit_post.csv', output_col='final_label', text_col='text', word_2_vec_dim=0, categorical_vars_lab_enc =[], categorical_vars_one_hot_enc=['depth'], categorical_vars_rank_enc=[], numerical_vars=[], do_kernel_transform=True, test_size=0.2, label_col='labels', deleted_post_str_indicator='[deleted]', annotator_col='annotators', **kwargs):
         super().__init__(data_loc, output_col, text_col, word_2_vec_dim, categorical_vars_lab_enc, categorical_vars_one_hot_enc, categorical_vars_rank_enc, numerical_vars, do_kernel_transform, test_size, label_col, deleted_post_str_indicator, annotator_col)
         self.model = SGDClassifier(loss='hinge', penalty='elasticnet', verbose=True)
         for arg, val in kwargs.items():
@@ -203,7 +212,7 @@ class SVMClfReddit(ClfReddit):
 
 class NBClfReddit(ClfReddit):
 
-    def __init__(self, data_loc='reddit_post.csv', output_col='final_label', text_col='text', word_2_vec_dim=0, categorical_vars_lab_enc=['depth'], categorical_vars_one_hot_enc=[], categorical_vars_rank_enc=[], numerical_vars=[], do_kernel_transform=False, test_size=0.2, label_col='labels', deleted_post_str_indicator='[deleted]', annotator_col='annotators', **kwargs):
+    def __init__(self, data_loc='reddit_post.csv', output_col='final_label', text_col='text', word_2_vec_dim=0, categorical_vars_lab_enc=[], categorical_vars_one_hot_enc=['depth'], categorical_vars_rank_enc=[], numerical_vars=[], do_kernel_transform=False, test_size=0.2, label_col='labels', deleted_post_str_indicator='[deleted]', annotator_col='annotators', **kwargs):
         super().__init__(data_loc, output_col, text_col, word_2_vec_dim, categorical_vars_lab_enc, categorical_vars_one_hot_enc, categorical_vars_rank_enc, numerical_vars, do_kernel_transform, test_size, label_col, deleted_post_str_indicator, annotator_col)
         for arg, val in kwargs.items():
             setattr(self, arg, val)

@@ -7,7 +7,7 @@ import pandas as pd
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, LabelEncoder, OrdinalEncoder
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Embedding, BatchNormalization, Dropout, MaxPooling1D, Conv1D, Activation, Flatten, Input, Dense, concatenate
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, Callback, TensorBoard
@@ -68,7 +68,7 @@ def get_unique_label(data, label_col, annotator_col, count_dict):
 
 class ConvTextRedditClf(Model):
 
-    def __init__(self, data_loc, output_col, text_col, annotator_col, other_var, test_split_ratio, **kwargs):
+    def __init__(self, data_loc, output_col, text_col, annotator_col, categorical_vars_one_hot_enc, categorical_vars_label_enc, categorical_vars_rank_enc, test_split_ratio, **kwargs):
         super().__init__()
 
         # getting all arguments except for kwargs
@@ -112,15 +112,16 @@ class ConvTextRedditClf(Model):
 
         # train and test data. Note test data is not used for hyper parameter tuning. for hyperparameter training we generate validation data from train_data itself
         self.train_data, self.test_data = train_test_split(self.data, self.test_split_ratio)
-        self.text_preprocessing = Pipeline([("column_selection", ColumnSelector([self.text_col])),
-                                ("text_cleaning", TextCleaning(self.text_col)), ("stem", Stem(self.text_col, True))])
-        self.text_feat_tokenizer = Pipeline([('preprocessing', self.text_preprocessing), ('tokeniser', TextTokeniser(self.text_col))])
-        self.other_feat_gen = ColumnTransformer([("other_column_selector", "column_selection", ColumnSelector(self.other_var), self.other_var), ("Character_feature_gen", CharacterFeatureGen(self.text_col), self.text_col),
-                              ('Encoding_post_depth_var', OneHotEncoder(handle_unknown='ignore'), [self.depth_post_col])], remainder='drop')
-
-        self.is_other_feat_gen_train = False
+        self.text_preprocessing = Pipeline([("stem", Stem(True)), ("cleaning", TextCleaning())])
+        self.text_feat_tokenizer = ColumnTransformer(["text_feat", Pipeline([('preprocessing', self.text_preprocessing), ('tokeniser', TextTokeniser(self.text_col))]), self.text_col])
+        self.categorical_feat_ext = ColumnTransformer([('one_hot', OneHotEncoder(), self.categorical_vars_one_hot_enc),
+                                                       ('label', LabelEncoder(), self.categorical_vars_lab_enc),
+                                                       ('ordinal', OrdinalEncoder(), self.categorical_vars_rank_enc)],
+                                                      remainder='drop')
+        self.char_feat_gen_pipeline = ColumnTransformer([("char_features", CharacterFeatureGen(), self.text_col)])
+        self.is_cat_feat_gen_train = False
         self.is_text_feat_gen_train = False
-        self.no_other_feature = len(pd.unique(self.data[self.depth_col])) + CharacterFeatureGen(self.text_col).num_feat_gen_
+        self.number_non_text_feature = len(pd.unique(self.data[self.depth_col])) + CharacterFeatureGen(self.text_col).num_feat_gen_
         self.input_sequence_size = max(self.text_preprocessing.fit_transform(self.data)[self.txt_col].apply(lambda x: len(x.strip().lower().split(" "))))
         self.vocab = sorted(set(self.text_preprocessing.fit_transform(self.data)[self.txt_col].str.strip().sum()))
 
@@ -141,7 +142,7 @@ class ConvTextRedditClf(Model):
         # removing rows which have missing values for text or label column
         data = data.dropna(subset=[self.text_col, self.label_col]).reset_index(drop=True)
         # removing rows which have text deleted
-        data = data[data[self.text_col] != self.empty_post_str_indicator].reset_index(drop=True)
+        data = data[~(data[self.text_col].isin([self.deleted_post_str_indicator, ' ', '']))].reset_index(drop=True)
         annotators_count = {}
         for row in data.itertuples(index=False):
             for annotator in row[data.columns.get_loc(self.annotator_col)].split(";"):
@@ -186,26 +187,22 @@ class ConvTextRedditClf(Model):
 
     def batch_data_generator(self, inp_data, batch_size):
         if not self.is_preprocessing_train:
-            self.text_preprocessing.fit(inp_data)
-            self.is_preprocessing_train = True
+            self.text_feat_tokenizer.fit(inp_data)
+            self.is_text_feat_gen_train = True
 
-        if not self.is_other_feat_gen_train:
-            self.other_feat_gen.fit(inp_data)
-            self.is_other_feat_gen_train = True
+        if not self.is_cat_feat_gen_train:
+            self.categorical_feat_ext.fit(inp_data)
+            self.is_cat_feat_gen_train = True
 
-        size = 0
-        text_inp = []
-        other_feature_inp = []
-        output = []
+        number_train_rows = inp_data.shape()[0]
+
+        start = 0
         while True:
-            for row in inp_data.itertuples(index=False):
-                while size < batch_size:
-                    text_inp.append(pad_sequences(self.text_feat_tokenizer.transform(row), maxlen=self.input_sequence_size, padding='post'))
-                    other_feature_inp.append(self.other_feat_gen.transform(row))
-                    output.append(row[inp_data.columns.get_loc(self.output_col)])
-                    size += 1
-
-            yield [np.array(text_inp), np.array(other_feature_inp)], output
+            text_inp = self.text_feat_tokenizer.transform(inp_data)
+            cat_feature_inp = self.categorical_feat_ext.transform(inp_data)
+            char_feature_inp = self.char_feat_gen_pipeline.transform(inp_data)
+            output = inp_data.iloc[start:start+batch_size, inp_data.columns.get_loc(self.output_col)].to_numpy()
+            yield [np.array(text_inp), np.concatenate([cat_feature_inp, char_feature_inp], axis=1)], output
 
     def fit(self, train_data=None, val_data=None, batch_size=128, val_split=0.25, num_epochs=1000, optimizer='rmsprop', loss=focal_loss(0.4, 2.0), gpu_no=0):
 

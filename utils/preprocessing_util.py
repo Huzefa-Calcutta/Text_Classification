@@ -14,15 +14,12 @@ class Stem(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):
-        try:
-            if self.do_stem:
-                X = X.apply(
-                    lambda post: " ".join([SnowballStemmer("english").stem(word) for word in post.strip().split()]))
-                return X
-            else:
-                return X
-        except KeyError:
-            raise KeyError("The DataFrame does not include the column: %s" % self.str_col)
+        if self.do_stem:
+            X= X.apply(
+                lambda post: " ".join([SnowballStemmer("english").stem(word) for word in post.strip().split()]))
+            return pd.DataFrame(X)
+        else:
+            return pd.DataFrame(X)
 
 
 class TextTokeniser(BaseEstimator, TransformerMixin):
@@ -47,7 +44,7 @@ class TextTokeniser(BaseEstimator, TransformerMixin):
         token_doc = []
         try:
             for sentence in X[self.str_col]:
-                token_doc.append([self.word_2_index.get(word,np.NaN) for word in sentence.split()])
+                token_doc.append([self.word_2_index.get(word, np.NaN) for word in sentence.split()])
             return token_doc
         except KeyError:
             raise KeyError("The DataFrame does not include the column: %s" % self.str_col)
