@@ -19,6 +19,7 @@ from sklearn.linear_model import SGDClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.kernel_approximation import Nystroem
 from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
 
 
 def get_unique_label(data, label_col, annotator_col, count_dict):
@@ -63,7 +64,7 @@ class Basemodel(object):
     base model object for either classification or regression. Specific classes for specific use can be derived from this class
     """
 
-    def __init__(self, data_loc, output_col, text_col, word_2_vec_dim, categorical_vars_lab_enc, categorical_vars_one_hot_enc, categorical_vars_rank_enc, numerical_vars, do_kernel_transform=False, test_size=0.2):
+    def __init__(self, data_loc, output_col, text_col, word_2_vec_dim, categorical_vars_lab_enc, categorical_vars_one_hot_enc, categorical_vars_rank_enc, numerical_vars, do_kernel_transform, test_size, model):
         """
         :param data_loc: location of training data set
         :param output_col: name of the output variable
@@ -91,12 +92,17 @@ class Basemodel(object):
                                                            ('word_2_vec', TfidfEmbeddingVectorizer(self.word_2_vec_dim), self.text_col)],
                                                           remainder='drop', verbose=True))])
         # categorical feature extraction
-        self.categorical_feat_ext = ColumnTransformer([('one_hot', OneHotEncoder(), self.categorical_vars_one_hot_enc),
-                                                       ('label', LabelEncoder(), self.categorical_vars_lab_enc),
-                                                       ('ordinal', OrdinalEncoder(), self.categorical_vars_rank_enc)], remainder='drop', verbose=True)
+        self.categorical_feat_ext = ColumnTransformer([('one_hot', Pipeline([("imputer", SimpleImputer(strategy="most_frequent")), ("encoder", OneHotEncoder())]), self.categorical_vars_one_hot_enc),
+                                                       ('label', Pipeline([("imputer", SimpleImputer(strategy="most_frequent")), ("encoder", LabelEncoder())]), self.categorical_vars_lab_enc),
+                                                       ('ordinal', Pipeline([("imputer", SimpleImputer(strategy="median")), ("encoder", OrdinalEncoder())]), self.categorical_vars_rank_enc)],
+                                                      remainder='drop', verbose=True)
 
         # building the overall feature extraction pipeline
         self.feat_ext = self.build_feature_extraction_pipeline()
+
+        # building model pipeline
+        self.model_pipeline = self.build_model_pipeline()
+        self.all_hyperparameters_list = [param for param in self.model_pipeline.get_params(True) if "__" in param]
 
     def build_feature_extraction_pipeline(self):
         """
@@ -105,8 +111,8 @@ class Basemodel(object):
         """
         if getattr(self, 'do_kernel_transform', False):
             # if kernel transformation is specified to be done we do kernel transformation of the generated features to account for non-linearity
-            feat_ext = Pipeline([('feat_ext', ColumnTransformer([('text_feat_ext', self.text_feat_ext, self.text_col), (
-            'cat_feat_ext', self.categorical_feat_ext,
+            feat_ext = Pipeline([('feat_ext', ColumnTransformer([('text_feat_ext', self.text_feat_ext, self.text_col),
+                                                                 ('cat_feat_ext', self.categorical_feat_ext,
             self.categorical_vars_lab_enc + self.categorical_vars_one_hot_enc + self.categorical_vars_rank_enc)],
                                               remainder='passthrough')), ("kernel_transform", Nystroem(n_components=1000))], verbose=True)
         else:
@@ -138,8 +144,6 @@ class Basemodel(object):
         n_cpus = args_dict.get('n_cpus', -1)
         n_folds = args_dict.get('n_folds', 5)
         num_random_search_iter = args_dict.get('num_random_search_iter', 50)
-        self.model_pipeline = self.build_model_pipeline()
-        self.all_hyperparameters_list = [param for param in self.model_pipeline.get_params(True) if "__" in param]
 
         # getting hyperparameters dicitionary with actual name as per model pipeline.
         for param in hyperparameter_dict:
@@ -208,11 +212,13 @@ class Basemodel(object):
 
 class ClfReddit(Basemodel):
     """
-    class for generic classifier for reddit post classifier
+    class for generic classifier for reddit post classifier. By default fits Multi naive bayes
     """
 
-    def __init__(self, data_loc, output_col, text_col, word_2_vec_dim, categorical_vars_lab_enc, categorical_vars_one_hot_enc, categorical_vars_rank_enc, numerical_vars, do_kernel_transform, test_size, label_col, deleted_post_str_indicator, annotator_col):
+    def __init__(self, data_loc='reddit_post.csv', output_col='final_label', text_col='text', word_2_vec_dim=0, categorical_vars_lab_enc=[], categorical_vars_one_hot_enc= ['depth'], categorical_vars_rank_enc=[], numerical_vars=[], test_size=0.2, label_col='labels', deleted_post_str_indicator='[deleted]', do_kernel_transform=False, annotator_col='annotators', model = MultinomialNB(), **kwargs):
         super().__init__(data_loc, output_col, text_col, word_2_vec_dim, categorical_vars_lab_enc, categorical_vars_one_hot_enc, categorical_vars_rank_enc, numerical_vars, do_kernel_transform, test_size)
+        for arg, val in kwargs.items():
+            setattr(self, arg, val)
         # basic preprocessing of the data which includes removal of rows with missing values for the label column or text column and generating the output label column
         self.label_col = label_col
         self.deleted_post_str_indicator = deleted_post_str_indicator
@@ -242,36 +248,3 @@ class ClfReddit(Basemodel):
                     annotators_count[annotator] = 1
         data[self.output_col] = get_unique_label(data, self.label_col, self.annotator_col, annotators_count)
         return data
-
-
-class RandomForestClfReddit(ClfReddit):
-    """
-    class for random forest classifier for reddit post classification
-    """
-    def __init__(self, data_loc='reddit_post.csv', output_col='final_label', text_col='text', word_2_vec_dim=0, categorical_vars_lab_enc=[], categorical_vars_one_hot_enc= ['depth'], categorical_vars_rank_enc=[], numerical_vars=[], test_size=0.2, label_col='labels', deleted_post_str_indicator='[deleted]', do_kernel_transform=False, annotator_col='annotators', **kwargs):
-        super().__init__(data_loc, output_col, text_col, word_2_vec_dim, categorical_vars_lab_enc, categorical_vars_one_hot_enc, categorical_vars_rank_enc, numerical_vars, do_kernel_transform, test_size, label_col, deleted_post_str_indicator, annotator_col)
-        for arg, val in kwargs.items():
-            setattr(self, arg, val)
-        self.model = RandomForestClassifier(class_weight="balanced", verbose=True, random_state=100)
-
-
-class SVMClfReddit(ClfReddit):
-    """
-    class for support vector classifier for reddit post classification
-    """
-    def __init__(self, data_loc='reddit_post.csv', output_col='final_label', text_col='text', word_2_vec_dim=0, categorical_vars_lab_enc =[], categorical_vars_one_hot_enc=['depth'], categorical_vars_rank_enc=[], numerical_vars=[], do_kernel_transform=True, test_size=0.2, label_col='labels', deleted_post_str_indicator='[deleted]', annotator_col='annotators', **kwargs):
-        super().__init__(data_loc, output_col, text_col, word_2_vec_dim, categorical_vars_lab_enc, categorical_vars_one_hot_enc, categorical_vars_rank_enc, numerical_vars, do_kernel_transform, test_size, label_col, deleted_post_str_indicator, annotator_col)
-        self.model = SGDClassifier(loss='hinge', penalty='elasticnet', verbose=True)
-        for arg, val in kwargs.items():
-            setattr(self, arg, val)
-
-
-class NBClfReddit(ClfReddit):
-    """
-    class for naive bayes classifier for reddit post classification
-    """
-    def __init__(self, data_loc='reddit_post.csv', output_col='final_label', text_col='text', word_2_vec_dim=0, categorical_vars_lab_enc=[], categorical_vars_one_hot_enc=['depth'], categorical_vars_rank_enc=[], numerical_vars=[], do_kernel_transform=False, test_size=0.2, label_col='labels', deleted_post_str_indicator='[deleted]', annotator_col='annotators', **kwargs):
-        super().__init__(data_loc, output_col, text_col, word_2_vec_dim, categorical_vars_lab_enc, categorical_vars_one_hot_enc, categorical_vars_rank_enc, numerical_vars, do_kernel_transform, test_size, label_col, deleted_post_str_indicator, annotator_col)
-        for arg, val in kwargs.items():
-            setattr(self, arg, val)
-        self.model = MultinomialNB()

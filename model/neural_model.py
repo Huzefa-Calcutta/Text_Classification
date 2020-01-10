@@ -79,7 +79,7 @@ def get_unique_label(data, label_col, annotator_col, count_dict):
     return unique_label_list
 
 
-class ConvTextRedditClf(Model):
+class ConvTextRedditClf(object):
     """
     class to build 1-D conv nets for text classification
     """
