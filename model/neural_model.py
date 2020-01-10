@@ -282,7 +282,7 @@ class ConvTextRedditClf(object):
                 end = number_train_rows
             if start >= number_train_rows:
                 start = 0
-            yield inp_data.iloc[start:start + batch_size], [np.array(text_inp), np.concatenate([cat_feature_inp, char_feature_inp], axis=1)]
+            yield [np.array(text_inp), np.concatenate([cat_feature_inp, char_feature_inp], axis=1)]
 
     def fit(self, train_data=None, val_data=None, batch_size=128, val_split=0.25, num_epochs=1000, optimizer='rmsprop', loss=focal_loss(0.4, 2.0), gpu_no=0):
         """
@@ -348,9 +348,9 @@ class ConvTextRedditClf(object):
             os.makedirs(os.path.split(pred_loc)[0])
 
         if gpu_no is None:
-            test_data['predicted_label'] = self.model.predict_generator(self.batch_generator(test_data, batch_size)[0], steps=math.ceil(test_data.shape[0] / batch_size), shuffle=False, use_multiprocessing=True, workers=8)
+            test_data['predicted_label'] = self.model.predict_generator(self.batch_generator(test_data, batch_size), steps=math.ceil(test_data.shape[0] / batch_size), shuffle=False, use_multiprocessing=True, workers=8)
 
         else:
             with tf.device('/gpu:%s' % gpu_no):
-                test_data['predicted_label'] = self.model.predict_generator(self.batch_generator(test_data, batch_size)[1],steps=math.ceil(test_data.shape[0]/batch_size), shuffle=False, use_multiprocessing=True, workers=1)
+                test_data['predicted_label'] = self.model.predict_generator(self.batch_generator(test_data, batch_size), steps=math.ceil(test_data.shape[0]/batch_size), shuffle=False, use_multiprocessing=True, workers=1)
         test_data.write(pred_loc)
